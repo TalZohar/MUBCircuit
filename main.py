@@ -19,7 +19,7 @@ IRREDUCIBLE_POLYS = {2: 0b111,  # x^2 + x + 1
                      9: 0b1000000101,
                      10: 0b10000001001}
 
-QUBIT_NUM = 2
+QUBIT_NUM = 4
 
 
 def to_base_p(x: int, p: int, n: int) -> np.ndarray:
@@ -135,7 +135,8 @@ def validate_mubs(base1: List[Statevector], base2: List[Statevector]) -> bool:
     for k in range(dim):
         for l in range(dim):
             dot_prod = base1[k].data.conj().dot(base2[l].data)
-            if not np.isclose(dot_prod ** 2, 1 / (dim + 1)):
+            print(dot_prod)
+            if not np.isclose(abs(dot_prod ** 2), 1 / dim):
                 return False
     return True
 
