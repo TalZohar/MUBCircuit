@@ -19,7 +19,7 @@ IRREDUCIBLE_POLYS = {2: 0b111,  # x^2 + x + 1
                      9: 0b1000000101,
                      10: 0b10000001001}
 
-QUBIT_NUM = 3
+QUBIT_NUM = 2
 
 
 def to_base_p(x: int, p: int, n: int) -> np.ndarray:
@@ -119,7 +119,7 @@ def mub_circuit(n: int, j: int) -> QuantumCircuit:
     return qc
 
 
-def validate_orthogonality(base: List) -> bool:
+def validate_orthogonality(base: List[Statevector]) -> bool:
     for i in range(len(base)):
         for j in range(i + 1, len(base)):
             dot_prod = base[i].data.conj().dot(base[j].data)
@@ -128,20 +128,21 @@ def validate_orthogonality(base: List) -> bool:
     return True
 
 
-def validate_mubs(base1: List, base2: List) -> bool:
+def validate_mubs(base1: List[Statevector], base2: List[Statevector]) -> bool:
     print("validating mubs")
     assert len(base1) == len(base2)
     dim = len(base1)
     for k in range(dim):
         for l in range(dim):
             dot_prod = base1[k].data.conj().dot(base2[l].data)
-            if not np.isclose(dot_prod, 1 / dim):
+            if not np.isclose(dot_prod ** 2, 1 / (dim + 1)):
                 return False
     return True
 
 
-mubs = []
-
+standard_basis_inputs = [''.join(bits) for bits in itertools.product('01', repeat=QUBIT_NUM)]
+standard_basis = [Statevector.from_label(i) for i in standard_basis_inputs]
+mubs = [standard_basis]
 for j in range(2 ** QUBIT_NUM):
     qc = mub_circuit(QUBIT_NUM, j)
     qc.draw("mpl")
@@ -155,11 +156,8 @@ for j in range(2 ** QUBIT_NUM):
 
     # Find MUB
     new_base = []
-    basis_inputs = [''.join(bits) for bits in itertools.product('01', repeat=QUBIT_NUM)]
-    for circuit_input in basis_inputs:
-        # Construct input statevector (little-endian: q_0 is rightmost)
-        input_sv = Statevector.from_label(circuit_input)
-        output_sv = input_sv.evolve(qc)
+    for circuit_input in standard_basis:
+        output_sv = circuit_input.evolve(qc)
         new_base.append(output_sv)
     print(new_base)
     # Validate result
