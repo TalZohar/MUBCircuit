@@ -1,3 +1,4 @@
+import itertools
 from typing import List
 import numpy as np
 from matplotlib import pyplot as plt
@@ -5,6 +6,7 @@ from qiskit import QuantumCircuit
 from qiskit_aer import AerSimulator, Aer
 from qiskit.compiler import transpile
 from qiskit.visualization import plot_histogram
+from qiskit.quantum_info import Statevector
 
 # Known irreducible polynomials (binary) for small n:
 IRREDUCIBLE_POLYS = {2: 0b111,  # x^2 + x + 1
@@ -17,7 +19,7 @@ IRREDUCIBLE_POLYS = {2: 0b111,  # x^2 + x + 1
                      9: 0b1000000101,
                      10: 0b10000001001}
 
-QUBIT_NUM = 2
+QUBIT_NUM = 3
 
 
 def to_base_p(x: int, p: int, n: int) -> np.ndarray:
@@ -61,7 +63,7 @@ def gf_mul(a: int, b: int, galois_matrices: List[np.ndarray], lsb_bits: int = QU
     b_v = to_base_p(b, 2, QUBIT_NUM)
     for index in range(lsb_bits):
         galois_matrix = galois_matrices[index]
-        index_val = a_v.T @ galois_matrix @ b_v
+        index_val = (a_v.T @ galois_matrix @ b_v) % 2
         out += index_val.item() * (1 << index)
     return out
 
@@ -84,6 +86,7 @@ def calculate_b(j: int, galois_matrices: List[np.ndarray]) -> np.ndarray:
         mul = lambda x1, x2: gf_mul(x1, x2, galois_matrices, lsb_bits=1)
         b_arr[index] = mul(j, x)
     return b_arr
+
 
 def mub_circuit(n: int, j: int) -> QuantumCircuit:
     """
@@ -111,21 +114,60 @@ def mub_circuit(n: int, j: int) -> QuantumCircuit:
     # CZ-part: apply CZ(s,t) where b[(s,t)] == 1
     for s in range(QUBIT_NUM):
         for t in range(s + 1, QUBIT_NUM):
-            if b[s+t] == 1:
+            if b[s + t] == 1:
                 qc.cz(s, t)
     return qc
+
+
+def validate_orthogonality(base: List) -> bool:
+    for i in range(len(base)):
+        for j in range(i + 1, len(base)):
+            dot_prod = base[i].data.conj().dot(base[j].data)
+            if not np.isclose(dot_prod, 0):
+                return False
+    return True
+
+
+def validate_mubs(base1: List, base2: List) -> bool:
+    print("validating mubs")
+    assert len(base1) == len(base2)
+    dim = len(base1)
+    for k in range(dim):
+        for l in range(dim):
+            dot_prod = base1[k].data.conj().dot(base2[l].data)
+            if not np.isclose(dot_prod, 1 / dim):
+                return False
+    return True
+
+
+mubs = []
 
 for j in range(2 ** QUBIT_NUM):
     qc = mub_circuit(QUBIT_NUM, j)
     qc.draw("mpl")
-    plt.show()
-    # Use qasm_simulator backend
+    # plt.show()
+
     backend = Aer.get_backend('statevector_simulator')
     compiled_circuit = transpile(qc, backend)
     job = backend.run(compiled_circuit, shots=1024)
     result = job.result()
     counts = result.get_counts()
 
+    # Find MUB
+    new_base = []
+    basis_inputs = [''.join(bits) for bits in itertools.product('01', repeat=QUBIT_NUM)]
+    for circuit_input in basis_inputs:
+        # Construct input statevector (little-endian: q_0 is rightmost)
+        input_sv = Statevector.from_label(circuit_input)
+        output_sv = input_sv.evolve(qc)
+        new_base.append(output_sv)
+    print(new_base)
+    # Validate result
+    assert validate_orthogonality(new_base)
+    for base in mubs:
+        assert validate_mubs(base, new_base)
+
+    mubs.append(new_base)
     # Plot the results
     plot_histogram(counts)
     # plt.show()
