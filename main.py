@@ -1,15 +1,19 @@
 import itertools
 from typing import List
 import numpy as np
+import math
 from matplotlib import pyplot as plt
 from qiskit import QuantumCircuit
 from qiskit_aer import AerSimulator, Aer
 from qiskit.compiler import transpile
-from qiskit.visualization import plot_histogram
+from qiskit.visualization import plot_histogram, circuit_drawer
 from qiskit.quantum_info import Statevector
+from PIL import Image
+import io
 
 # Known irreducible polynomials (binary) for small n:
-IRREDUCIBLE_POLYS = {2: 0b111,  # x^2 + x + 1
+IRREDUCIBLE_POLYS = {1: 0b11,
+                     2: 0b111,  # x^2 + x + 1
                      3: 0b1011,  # x^3 + x + 1
                      4: 0b10011,  # x^4 + x + 1
                      5: 0b100101,  # x^5 + x^2 + 1
@@ -19,7 +23,7 @@ IRREDUCIBLE_POLYS = {2: 0b111,  # x^2 + x + 1
                      9: 0b1000000101,
                      10: 0b10000001001}
 
-QUBIT_NUM = 4
+QUBIT_NUM = 6
 
 
 def to_base_p(x: int, p: int, n: int) -> np.ndarray:
@@ -58,6 +62,7 @@ def calculate_galois_matrices() -> List[np.ndarray]:
 
 
 def gf_mul(a: int, b: int, galois_matrices: List[np.ndarray], lsb_bits: int = QUBIT_NUM) -> int:
+    lsb_bits = min(QUBIT_NUM, lsb_bits)
     out = 0
     a_v = to_base_p(a, 2, QUBIT_NUM)
     b_v = to_base_p(b, 2, QUBIT_NUM)
@@ -71,8 +76,9 @@ def gf_mul(a: int, b: int, galois_matrices: List[np.ndarray], lsb_bits: int = QU
 def calculate_a(j: int, galois_matrices: List[np.ndarray]) -> np.ndarray:
     a_arr = np.zeros(QUBIT_NUM, dtype=int)
     for index in range(QUBIT_NUM):
-        mul = lambda x1, x2: gf_mul(x1, x2, galois_matrices, lsb_bits=2)
-        a_arr[index] = mul(j, mul(1 << index, 1 << index))
+        inner_term = gf_mul(1 << index, 1 << index, galois_matrices, lsb_bits=QUBIT_NUM)
+        exponent = gf_mul(j, inner_term, galois_matrices, lsb_bits=2)
+        a_arr[index] = exponent if exponent % 2 == 0 else 4 - exponent  # take the conjugate into account
     return a_arr
 
 
@@ -80,11 +86,9 @@ def calculate_b(j: int, galois_matrices: List[np.ndarray]) -> np.ndarray:
     b_arr = np.zeros(2 * QUBIT_NUM - 1, dtype=int)
     x = 1
     for index in range(2 * QUBIT_NUM - 1):
-        mul = lambda x1, x2: gf_mul(x1, x2, galois_matrices)
         if index > 0:
-            x = mul(x, 2)
-        mul = lambda x1, x2: gf_mul(x1, x2, galois_matrices, lsb_bits=1)
-        b_arr[index] = mul(j, x)
+            x = gf_mul(x, 2, galois_matrices)
+        b_arr[index] = gf_mul(j, x, galois_matrices, lsb_bits=1)
     return b_arr
 
 
@@ -93,7 +97,7 @@ def mub_circuit(n: int, j: int) -> QuantumCircuit:
     Build the MUB circuit U(j) for n qubits.
     The circuit does H^⊗n, then S^a on each qubit, then CZ gates.
     """
-    qc = QuantumCircuit(n)
+    qc = QuantumCircuit(n, name=f"MUB generator for j={j}")
     # H-part: Hadamard on all qubits
     for q in range(n):
         qc.h(q)
@@ -129,44 +133,81 @@ def validate_orthogonality(base: List[Statevector]) -> bool:
 
 
 def validate_mubs(base1: List[Statevector], base2: List[Statevector]) -> bool:
-    print("validating mubs")
     assert len(base1) == len(base2)
     dim = len(base1)
     for k in range(dim):
         for l in range(dim):
             dot_prod = base1[k].data.conj().dot(base2[l].data)
-            print(dot_prod)
             if not np.isclose(abs(dot_prod ** 2), 1 / dim):
                 return False
     return True
 
 
-standard_basis_inputs = [''.join(bits) for bits in itertools.product('01', repeat=QUBIT_NUM)]
-standard_basis = [Statevector.from_label(i) for i in standard_basis_inputs]
-mubs = [standard_basis]
-for j in range(2 ** QUBIT_NUM):
-    qc = mub_circuit(QUBIT_NUM, j)
-    qc.draw("mpl")
-    # plt.show()
+def draw_circuits_grid(circuits: List[QuantumCircuit]) -> None:
+    count = len(circuits)
+    cols = math.ceil(math.sqrt(count))
+    rows = math.ceil(count / cols)
 
-    backend = Aer.get_backend('statevector_simulator')
-    compiled_circuit = transpile(qc, backend)
-    job = backend.run(compiled_circuit, shots=1024)
-    result = job.result()
-    counts = result.get_counts()
+    fig, axs = plt.subplots(rows, cols, figsize=(cols * 4, rows * 3))
+    axs = axs.flatten() if isinstance(axs, (list, np.ndarray)) else [axs]
 
-    # Find MUB
-    new_base = []
-    for circuit_input in standard_basis:
-        output_sv = circuit_input.evolve(qc)
-        new_base.append(output_sv)
-    print(new_base)
-    # Validate result
-    assert validate_orthogonality(new_base)
-    for base in mubs:
-        assert validate_mubs(base, new_base)
+    for ax in axs[count:]:
+        ax.axis("off")
 
-    mubs.append(new_base)
-    # Plot the results
-    plot_histogram(counts)
-    # plt.show()
+    for i, circuit in enumerate(circuits):
+        # Render circuit to matplotlib figure
+        fig_circuit = circuit_drawer(circuit, output='mpl')
+
+        # Save to buffer
+        buf = io.BytesIO()
+        fig_circuit.savefig(buf, format='png')
+        buf.seek(0)
+        img = Image.open(buf)
+
+        # Display as image
+        axs[i].imshow(img)
+        axs[i].axis("off")
+        axs[i].set_title(circuit.name or f"Circuit {i}")
+
+        plt.close(fig_circuit)
+
+    plt.tight_layout()
+    plt.show()
+
+
+def generate_mubs(run_simultion: bool = False) -> None:
+    standard_basis_inputs = [''.join(bits) for bits in itertools.product('01', repeat=QUBIT_NUM)]
+    standard_basis = [Statevector.from_label(i) for i in standard_basis_inputs]
+    standard_basis_circuit = QuantumCircuit(QUBIT_NUM, name="MUB generator for standard basis")
+    mubs = [standard_basis]
+    circuits = [standard_basis_circuit]
+    for j in range(2 ** QUBIT_NUM):
+        qc = mub_circuit(QUBIT_NUM, j)
+        circuits.append(qc)
+
+        # Find MUB
+        new_base = []
+        for circuit_input in standard_basis:
+            output_sv = circuit_input.evolve(qc)
+            new_base.append(output_sv)
+        # Validate result
+        assert validate_orthogonality(new_base)
+        for base in mubs:
+            assert validate_mubs(base, new_base)
+
+        mubs.append(new_base)
+
+        if run_simultion:
+            backend = Aer.get_backend('statevector_simulator')
+            compiled_circuit = transpile(qc, backend)
+            job = backend.run(compiled_circuit, shots=1024)
+            result = job.result()
+            counts = result.get_counts()
+            # Plot the results
+            plot_histogram(counts)
+
+    draw_circuits_grid(circuits)
+
+
+if __name__ == '__main__':
+    generate_mubs()
